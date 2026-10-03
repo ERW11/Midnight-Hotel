@@ -3,67 +3,66 @@
 ## Architecture and security
 
 - Build TRUST NO ONE: Midnight Hotel with Roblox Studio, Luau, and Rojo.
-- Keep server code in `src/server`, client code in `src/client`, and public shared
-  modules in `src/shared`. Keep configuration separate from behavior.
-- Gameplay must be server-authoritative. Never trust client-submitted gameplay
-  results; validate requests and derive outcomes on the server.
-- Never replicate secret role information publicly. Keep role assignments and
-  authoritative round state server-only. When implemented, deliver only the
-  intended player's role privately.
-- Shared modules are visible to all clients. `src/shared/Config.luau` contains
-  only public tuning, never secrets or per-player role data.
-- Centralize configuration instead of scattering magic numbers. Durations are seconds.
-- Prefer simple, understandable, maintainable modules over frameworks.
-- Do not add external packages without explicit approval. Do not use Toolbox scripts.
-- All player-facing text must be English.
-- Inspect existing structure, starter files, and Rojo mappings before editing.
-  Do not rewrite unrelated working code. Adjust `default.project.json` only if needed.
-- Cleanly reset all round-created systems and resources between rounds, including
-  connections, tasks, instances, roster data, and state.
+- Keep server code in src/server, client code in src/client, public tuning in
+  src/shared/Config.luau, and server-specific layout configuration in HotelLayout.
+- Server code owns roles, locked rosters, tasks, solutions, timers, and transitions.
+  Never accept client gameplay results, completion claims, or role/area selection.
+- Never publicly replicate secret role assignments or personal task state through
+  Attributes, Values, folders, shared modules, or broadcasts. PrivateRole delivers
+  only the recipient's role; PrivateTasks delivers only the sender's own task status.
+- Task readiness requests cannot assign, advance, or complete a task.
+- Physical clues intentionally reveal answer fragments. Keep the authoritative
+  solution and randomized placement choices server-only; do not send answer tables.
+- Validate task ownership, Guest role, active roster, PLAYING/deadline, connected
+  living character, symbol, actual distance, and input rate before processing.
+  Validation through mutation must not yield. Attempts and completion are personal.
+- Centralize configuration. Prefer small understandable modules; no frameworks,
+  external packages without approval, or Toolbox scripts. English player-facing text.
+- Inspect current files before edits; preserve unrelated working behavior and Rojo mappings.
+- Round resets/Stop must clear tasks, roles, roster, solutions, attempts, delayed
+  feedback and round connections. Geometry belongs to the session and is reused.
 
-## Scope
+## Current scope: Milestone 2B personal tasks
 
-Milestone 2A adds only Room 1, the Fuse Room, to the tested Milestone 1A-1C flow. RoundService
-owns a capped roster snapshot; late joiners cannot enter the current roster.
-RoleService stores authoritative secret assignments only in server memory.
-PrivateRole sends only the recipient's own role; client readiness is never eligibility.
-Never replicate a role table, role Attributes, or the Saboteur identity publicly.
-PLAYING preserves roles and roster and uses a server-owned deadline. Its timer
-ends at a temporary RESETTING boundary on timeout or server-confirmed Fuse Room completion, never RESULTS.
-WorldService owns Workspace.MidnightHotelGreybox, deterministic lobby/hotel geometry,
-server positioning, bounded character waits, and respawn routing. Never put roles
-in world objects. Replace pending moves when destinations change; clean them on Stop.
-Late joiners stay in the lobby; active players respawn in the hotel only during PLAYING.
-PuzzleService owns the server-only randomized solution, prompt validation, progress,
-completion latch, and round puzzle cleanup. WorldService owns physical controls,
-slots, and intentionally visible clue text. Never replicate the authoritative answer
-table or accept client completion/solution claims. Validate roster, PLAYING/deadline,
-character, distance, symbol, and rate on the server. Mutation must not yield.
-Incorrect or duplicate accepted inputs reset progress without preventing retries.
-RoundService alone arbitrates completion delay versus timeout using one timer.
-DevelopmentRoundDuration is 60 seconds for clue reading/retries; production remains 300.
-Do not implement future systems without a new task authorizing them.
+Implemented round flow:
+`WAITING → COUNTDOWN → ROLE_REVEAL → PLAYING → RESETTING → WAITING`
 
-Eventual Milestone 1 flow:
+RoundService owns this flow and the server timer. Only timeout ends PLAYING in 2B.
+No personal task completion, including all Guests finishing, ends a round.
+TaskService owns assignments: each Guest will eventually have exactly ONE Long
+and ONE Short Task. In 2B every active Guest receives Restore Hotel Power / Fuse Hunt
+as the Long Task. Short Task stays unassigned (nil) and incomplete (false).
+Circuit Router is the planned Short Task for 2C; do not implement it yet.
+Split Decisions is removed from the current roadmap.
 
-`WAITING → COUNTDOWN → ROLE_REVEAL → PLAYING → RESULTS → RESETTING → WAITING`
+Saboteurs have no real task records or genuine completion requirements. Do not
+implement fake tasks, sabotage, killing, or voting yet. Future fake-task behavior
+must not write genuine task progress. RoleService retains one random Saboteur in
+multiplayer; the explicit DevelopmentSoloGuest override is limited to a one-player
+Studio roster with DevelopmentMode enabled. Disable it to test solo Saboteur denial.
 
-Eventual features: lobby waiting, configurable minimum players, countdown,
-private Guest/Saboteur assignment, active-roster teleportation to a greybox hotel,
-round timer, simple exit detection, results, full reset, late joiners outside
-active rounds, and a development/solo testing override. The server must decide
-whether to apply the development minimum; clients cannot authorize round changes.
+PuzzleService owns a per-round Fuse Hunt sequence and separate per-Guest attempts.
+TaskService owns Long/Short assignment and completion records. The same four clues
+can serve multiple Guests, but completing/resetting an attempt affects only its owner.
+WorldService owns geometry, readable SurfaceGui signs, physical clue signs, positioning,
+bounded character waits, and respawn routing. HotelLayout defines eight valid clue
+locations across Bedroom, Bathroom, Reception, Hallway, Maintenance, and Storage.
+Choose four distinct locations each round and randomize clue-number placement.
+Do not put all clues back at the Fuse panel or reintroduce overlapping billboards.
 
-Do not add DataStore, MemoryStore, MessagingService, monetization, progression,
-matchmaking, sabotage abilities, voting, or final hotel art yet.
-Only Room 1's Fuse Room puzzle, native prompts, greybox, and physical feedback are authorized.
-Do not add Room 2/3, final escape/Escape Alone, results scoring, rewards, spectator
-mode, final UI/HUD, or other puzzles. All later systems require a new task.
+Late joiners stay in the lobby, with no role or task for the current roster.
+Respawns route active PLAYING players to the hotel, preserving their task progress.
+DevelopmentRoundDuration remains 60; production RoundDuration remains 300 seconds.
+Personal status is shown locally on existing panel signs, not a final HUD.
+
+Do not add Circuit Router, Split Decisions, Room 2/3 puzzles, sabotage, voting,
+killing, final escape/Escape Alone, RESULTS/scoring, rewards, progression, DataStore,
+MemoryStore, MessagingService, matchmaking, spectator mode, monetization, polished
+art, or final UI. Later systems require a new task.
 
 ## Verification and delivery
 
-- Keep README status accurate; configuration is not implemented gameplay.
-- Validate Rojo builds when the CLI is available. Check runtime module loading
-  and server/client Output in Studio; never claim an unperformed test.
-- Report changed files, verification results, manual checks, and remaining work.
-- Do not commit or push unless the user explicitly authorizes it.
+- Keep README truthful about implemented behavior and validation limits.
+- Run available Rojo/build/whitespace checks. Build success is not a Studio runtime test.
+- Report changed files, checks, exact manual test steps, and remaining limitations.
+- No commits or pushes unless explicitly authorized.

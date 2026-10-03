@@ -41,8 +41,7 @@ local Config = {
 		InteractionDistance = 12,
 		InteractionCooldown = 0.35,
 		IncorrectFeedbackDuration = 2,
-		CompletionDelay = 3,
-		FloorSize = Vector3.new(120, 2, 90),
+		FloorSize = Vector3.new(120, 2, 210),
 		WallHeight = 30,
 		PanelOffset = Vector3.new(0, 8, -41),
 		PanelSize = Vector3.new(100, 10, 2),
@@ -58,15 +57,14 @@ local Config = {
 		RoomSignOffset = Vector3.new(0, 21, 43),
 		RoomSignSize = Vector3.new(44, 5, 1),
 		PromptOffset = Vector2.new(0, -65),
-		ClueOffsets = table.freeze({
-			Vector3.new(-58, 7, 0), Vector3.new(58, 7, 0),
-			Vector3.new(-30, 7, 43), Vector3.new(30, 7, 43),
-		}),
-		-- Back faces (+Z locally) are rotated toward the room interior.
-		ClueYawDegrees = table.freeze({ 90, -90, 180, 180 }),
 		ClueSize = Vector3.new(16, 10, 1),
 		PixelsPerStud = 40,
 		TextPadding = 0.06,
+	}),
+	Tasks = table.freeze({
+		-- Only applies to a one-player Studio roster with DevelopmentMode=true.
+		DevelopmentSoloGuest = true,
+		StatusRequestCooldown = 0.5,
 	}),
 	DevelopmentMode = true,
 }

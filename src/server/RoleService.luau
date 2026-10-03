@@ -1,6 +1,8 @@
 --!strict
 
 type Role = "Guest" | "Saboteur"
+local Config = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Config"))
+local RunService = game:GetService("RunService")
 local RoleService = {}
 local roles: { [Player]: Role } = {}
 local random = Random.new()
@@ -13,6 +15,11 @@ function RoleService.AssignRoles(roster: { Player })
 		unique[player] = true
 	end
 	table.clear(roles)
+	if #roster == 1 and RunService:IsStudio() and Config.DevelopmentMode and Config.Tasks.DevelopmentSoloGuest then
+		roles[roster[1]] = "Guest"
+		print("[Midnight Hotel][RoleService] Studio solo Guest override active.")
+		return
+	end
 	local saboteurIndex = random:NextInteger(1, #roster)
 	for index, player in roster do
 		roles[player] = if index == saboteurIndex then "Saboteur" else "Guest"

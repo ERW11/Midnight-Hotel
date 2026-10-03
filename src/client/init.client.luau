@@ -25,3 +25,6 @@ end)
 
 -- Subscribe before announcing readiness. No role is cached on the client.
 remote:FireServer("Ready")
+
+local TaskDisplay = require(script:WaitForChild("TaskDisplay"))
+TaskDisplay.Start()

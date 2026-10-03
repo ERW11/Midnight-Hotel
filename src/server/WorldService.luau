@@ -4,6 +4,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
 local Settings = Config.World
+local HotelLayout = require(script.Parent:WaitForChild("HotelLayout"))
 
 type Area = "Lobby" | "Hotel"
 type Destination = { area: Area, slot: number }
@@ -17,6 +18,7 @@ export type FuseView = {
 	prompts: { [string]: ProximityPrompt },
 	slots: { TextLabel },
 	clues: { TextLabel },
+	clueParts: { Part },
 	status: TextLabel,
 }
 local fuseView: FuseView? = nil
@@ -86,11 +88,11 @@ local function buildFuseRoom(hotel: Instance)
 	local statusSign = part(room, "StatusSign", tuning.StatusSize, center + tuning.StatusOffset, panel.Color)
 	local status = display(statusSign, "WAITING FOR ROUND")
 	local objective = part(room, "ObjectiveSign", tuning.ObjectiveSize, center + tuning.ObjectiveOffset, panel.Color)
-	display(objective, "RESTORE POWER\nFind the clues and enter the fuse sequence.")
+	display(objective, "RESTORE HOTEL POWER\nFind CLUES 1-4 around the hotel. Enter your sequence here.")
 	local roomSign = part(room, "RoomSign", tuning.RoomSignSize, center + tuning.RoomSignOffset, panel.Color)
 	roomSign.CFrame *= CFrame.Angles(0, math.pi, 0)
 	display(roomSign, "ROOM 1 - THE FUSE ROOM")
-	local view: FuseView = { controls = {}, prompts = {}, slots = {}, clues = {}, status = status }
+	local view: FuseView = { controls = {}, prompts = {}, slots = {}, clues = {}, clueParts = {}, status = status }
 	for index, symbol in tuning.Symbols do
 		local centeredIndex = index - (#tuning.Symbols + 1) / 2
 		local slot = part(room, "Slot" .. index, tuning.SlotSize,
@@ -111,12 +113,60 @@ local function buildFuseRoom(hotel: Instance)
 		prompt.Enabled = false
 		prompt.Parent = control
 		view.prompts[symbol] = prompt
-		local clue = part(room, "Clue" .. index, tuning.ClueSize,
-			center + tuning.ClueOffsets[index], Color3.fromRGB(75, 85, 95))
-		clue.CFrame *= CFrame.Angles(0, math.rad(tuning.ClueYawDegrees[index]), 0)
-		view.clues[index] = display(clue, "CLUE OFFLINE")
+	end
+	local clues = Instance.new("Folder")
+	clues.Name = "FuseHuntClues"
+	clues.Parent = hotel
+	for index = 1, #tuning.Symbols do
+		local clue = part(clues, "Clue" .. index, tuning.ClueSize, center, Color3.fromRGB(75, 85, 95))
+		clue.CanCollide = false
+		clue.Transparency = 1
+		view.clueParts[index] = clue
+		view.clues[index] = display(clue, "")
+		local gui = view.clues[index].Parent
+		assert(gui and gui:IsA("SurfaceGui"))
+		gui.Enabled = false
+	end
+	local areas = Instance.new("Folder")
+	areas.Name = "PrototypeAreas"
+	areas.Parent = hotel
+	for _, area in HotelLayout.Areas do
+		local folder = Instance.new("Folder")
+		folder.Name = area.name
+		folder.Parent = areas
+		local floor = part(folder, "AreaFloor", HotelLayout.AreaSize, center + area.offset, Color3.fromRGB(75, 80, 90))
+		floor.CanCollide = false
+		local sign = part(folder, "AreaSign", Vector3.new(22, 4, 1),
+			center + area.offset + Vector3.new(0, 12, 10), Color3.fromRGB(50, 55, 60))
+		sign.CFrame *= CFrame.Angles(0, math.pi, 0)
+		display(sign, string.upper(area.name))
 	end
 	fuseView = view
+end
+
+-- Only PuzzleService chooses round placements. Each clue has one stable physical sign.
+function WorldService.PlaceFuseClue(index: number, locationIndex: number, text: string)
+	local location = HotelLayout.ClueLocations[locationIndex]
+	local currentView = fuseView
+	assert(currentView and location, "Invalid clue placement")
+	local clue = currentView.clueParts[index]
+	clue.CFrame = CFrame.new(Settings.HotelCenter + location.offset) * CFrame.Angles(0, math.rad(location.yaw), 0)
+	clue.Transparency = 0
+	currentView.clues[index].Text = text
+	local gui = currentView.clues[index].Parent
+	assert(gui and gui:IsA("SurfaceGui"))
+	gui.Enabled = true
+end
+
+function WorldService.HideFuseClues()
+	local currentView = fuseView
+	if not currentView then return end
+	for index, clue in currentView.clueParts do
+		clue.Transparency = 1
+		currentView.clues[index].Text = ""
+		local gui = currentView.clues[index].Parent
+		if gui and gui:IsA("SurfaceGui") then gui.Enabled = false end
+	end
 end
 
 function WorldService.EnsureWorld()
