@@ -12,6 +12,14 @@ local world: Folder? = nil
 local destinations: { [Player]: Destination } = {}
 local characterConnections: { [Player]: RBXScriptConnection } = {}
 local pending: { [Player]: thread } = {}
+export type FuseView = {
+	controls: { [string]: Part },
+	prompts: { [string]: ProximityPrompt },
+	slots: { TextLabel },
+	clues: { TextLabel },
+	status: TextLabel,
+}
+local fuseView: FuseView? = nil
 
 local function position(area: Area, slot: number): CFrame
 	local center = if area == "Hotel" then Settings.HotelCenter else Settings.LobbyCenter
@@ -38,6 +46,79 @@ local function part(parent: Instance, name: string, size: Vector3, location: Vec
 	return item
 end
 
+local function display(parent: BasePart, text: string): TextLabel
+	-- Text occupies only its physical sign face; it cannot float over nearby signs.
+	local gui = Instance.new("SurfaceGui")
+	gui.Name = "Display"
+	gui.Adornee = parent
+	gui.Face = Enum.NormalId.Back
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+	gui.PixelsPerStud = Config.FuseRoom.PixelsPerStud
+	gui.AlwaysOnTop = false
+	gui.LightInfluence = 0
+	gui.Parent = parent
+	local label = Instance.new("TextLabel")
+	label.Name = "Text"
+	label.Size = UDim2.fromScale(1, 1)
+	label.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+	label.BackgroundTransparency = 0.15
+	label.TextColor3 = Color3.new(1, 1, 1)
+	label.TextScaled = true
+	label.TextWrapped = true
+	label.Text = text
+	label.Parent = gui
+	local padding = Instance.new("UIPadding")
+	padding.PaddingLeft = UDim.new(Config.FuseRoom.TextPadding, 0)
+	padding.PaddingRight = UDim.new(Config.FuseRoom.TextPadding, 0)
+	padding.PaddingTop = UDim.new(Config.FuseRoom.TextPadding, 0)
+	padding.PaddingBottom = UDim.new(Config.FuseRoom.TextPadding, 0)
+	padding.Parent = label
+	return label
+end
+
+local function buildFuseRoom(hotel: Instance)
+	local tuning = Config.FuseRoom
+	local center = Settings.HotelCenter
+	local room = Instance.new("Folder")
+	room.Name = "FuseRoom"
+	room.Parent = hotel
+	local panel = part(room, "ControlPanel", tuning.PanelSize, center + tuning.PanelOffset, Color3.fromRGB(60, 65, 70))
+	local statusSign = part(room, "StatusSign", tuning.StatusSize, center + tuning.StatusOffset, panel.Color)
+	local status = display(statusSign, "WAITING FOR ROUND")
+	local objective = part(room, "ObjectiveSign", tuning.ObjectiveSize, center + tuning.ObjectiveOffset, panel.Color)
+	display(objective, "RESTORE POWER\nFind the clues and enter the fuse sequence.")
+	local roomSign = part(room, "RoomSign", tuning.RoomSignSize, center + tuning.RoomSignOffset, panel.Color)
+	roomSign.CFrame *= CFrame.Angles(0, math.pi, 0)
+	display(roomSign, "ROOM 1 - THE FUSE ROOM")
+	local view: FuseView = { controls = {}, prompts = {}, slots = {}, clues = {}, status = status }
+	for index, symbol in tuning.Symbols do
+		local centeredIndex = index - (#tuning.Symbols + 1) / 2
+		local slot = part(room, "Slot" .. index, tuning.SlotSize,
+			center + tuning.PanelOffset + Vector3.new(centeredIndex * tuning.SlotSpacing, 0, 2), panel.Color)
+		view.slots[index] = display(slot, string.format("SLOT %d\n[ EMPTY ]", index))
+		local control = part(room, "Control_" .. symbol, tuning.ControlSize,
+			center + tuning.ControlOffset + Vector3.new(centeredIndex * tuning.ControlSpacing, 0, 0), Color3.fromRGB(150, 140, 80))
+		view.controls[symbol] = control
+		display(control, symbol)
+		local prompt = Instance.new("ProximityPrompt")
+		prompt.Name = "InstallFuse"
+		prompt.ActionText = "Install " .. symbol
+		prompt.ObjectText = "Fuse control"
+		prompt.HoldDuration = 0
+		prompt.MaxActivationDistance = tuning.InteractionDistance
+		prompt.RequiresLineOfSight = true
+		prompt.UIOffset = tuning.PromptOffset
+		prompt.Enabled = false
+		prompt.Parent = control
+		view.prompts[symbol] = prompt
+		local clue = part(room, "Clue" .. index, tuning.ClueSize,
+			center + tuning.ClueOffsets[index], Color3.fromRGB(75, 85, 95))
+		clue.CFrame *= CFrame.Angles(0, math.rad(tuning.ClueYawDegrees[index]), 0)
+		view.clues[index] = display(clue, "CLUE OFFLINE")
+	end
+	fuseView = view
+end
+
 function WorldService.EnsureWorld()
 	if world and world.Parent == workspace then
 		return
@@ -52,11 +133,11 @@ function WorldService.EnsureWorld()
 		local folder = Instance.new("Folder")
 		folder.Name = area
 		folder.Parent = root
-		local floor = part(folder, "Floor", Settings.FloorSize, center, Color3.fromRGB(95, 95, 105))
+		local size = if area == "Hotel" then Config.FuseRoom.FloorSize else Settings.FloorSize
+		local floor = part(folder, "Floor", size, center, Color3.fromRGB(95, 95, 105))
 		-- Closed shells keep ordinary walking players in their assigned area.
-		local height = Settings.WallHeight
+		local height = if area == "Hotel" then Config.FuseRoom.WallHeight else Settings.WallHeight
 		local thickness = Settings.WallThickness
-		local size = Settings.FloorSize
 		local y = (size.Y + height) / 2
 		part(folder, "NorthWall", Vector3.new(size.X, height, thickness), center + Vector3.new(0, y, -size.Z / 2), floor.Color)
 		part(folder, "SouthWall", Vector3.new(size.X, height, thickness), center + Vector3.new(0, y, size.Z / 2), floor.Color)
@@ -68,20 +149,25 @@ function WorldService.EnsureWorld()
 				if area == "Hotel" then Color3.fromRGB(180, 150, 80) else Color3.fromRGB(80, 150, 180))
 			marker.CanCollide = false
 		end
-		local label = Instance.new("BillboardGui")
-		label.Name = "AreaLabel"
-		label.Adornee = floor
-		label.Size = UDim2.fromOffset(Settings.LabelSize.X, Settings.LabelSize.Y)
-		label.StudsOffset = Settings.LabelOffset
-		label.MaxDistance = Settings.LabelMaxDistance
-		label.Parent = floor
-		local text = Instance.new("TextLabel")
-		text.Size = UDim2.fromScale(1, 1)
-		text.BackgroundTransparency = 1
-		text.TextColor3 = Color3.new(1, 1, 1)
-		text.TextScaled = true
-		text.Text = if area == "Hotel" then "HOTEL TEST AREA" else "MIDNIGHT HOTEL - LOBBY"
-		text.Parent = label
+		if area == "Lobby" then
+			local label = Instance.new("BillboardGui")
+			label.Name = "AreaLabel"
+			label.Adornee = floor
+			label.Size = UDim2.fromOffset(Settings.LabelSize.X, Settings.LabelSize.Y)
+			label.StudsOffset = Settings.LabelOffset
+			label.MaxDistance = Settings.LabelMaxDistance
+			label.Parent = floor
+			local text = Instance.new("TextLabel")
+			text.Size = UDim2.fromScale(1, 1)
+			text.BackgroundTransparency = 1
+			text.TextColor3 = Color3.new(1, 1, 1)
+			text.TextScaled = true
+			text.Text = "MIDNIGHT HOTEL - LOBBY"
+			text.Parent = label
+		end
+		if area == "Hotel" then
+			buildFuseRoom(folder)
+		end
 	end
 	-- A neutral lobby spawn also provides a safe initial engine spawn location.
 	local spawn = Instance.new("SpawnLocation")
@@ -95,6 +181,13 @@ function WorldService.EnsureWorld()
 	root.Parent = workspace
 	world = root
 	print("[Midnight Hotel][WorldService] Greybox ready: Lobby and Hotel.")
+end
+
+-- Server-only view references; authoritative puzzle state is never stored here.
+function WorldService.GetFuseRoom(): FuseView
+	WorldService.EnsureWorld()
+	assert(fuseView, "Fuse Room was not initialized")
+	return fuseView
 end
 
 local function cancelMove(player: Player)

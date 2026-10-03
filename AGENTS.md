@@ -23,18 +23,25 @@
 
 ## Scope
 
-Milestone 1C adds PLAYING and RESETTING to the tested WAITING/COUNTDOWN/ROLE_REVEAL flow. RoundService
+Milestone 2A adds only Room 1, the Fuse Room, to the tested Milestone 1A-1C flow. RoundService
 owns a capped roster snapshot; late joiners cannot enter the current roster.
 RoleService stores authoritative secret assignments only in server memory.
 PrivateRole sends only the recipient's own role; client readiness is never eligibility.
 Never replicate a role table, role Attributes, or the Saboteur identity publicly.
 PLAYING preserves roles and roster and uses a server-owned deadline. Its timer
-ends at a temporary RESETTING boundary, not RESULTS or a win condition.
+ends at a temporary RESETTING boundary on timeout or server-confirmed Fuse Room completion, never RESULTS.
 WorldService owns Workspace.MidnightHotelGreybox, deterministic lobby/hotel geometry,
 server positioning, bounded character waits, and respawn routing. Never put roles
 in world objects. Replace pending moves when destinations change; clean them on Stop.
 Late joiners stay in the lobby; active players respawn in the hotel only during PLAYING.
-DevelopmentRoundDuration is 20 seconds; production RoundDuration remains 300.
+PuzzleService owns the server-only randomized solution, prompt validation, progress,
+completion latch, and round puzzle cleanup. WorldService owns physical controls,
+slots, and intentionally visible clue text. Never replicate the authoritative answer
+table or accept client completion/solution claims. Validate roster, PLAYING/deadline,
+character, distance, symbol, and rate on the server. Mutation must not yield.
+Incorrect or duplicate accepted inputs reset progress without preventing retries.
+RoundService alone arbitrates completion delay versus timeout using one timer.
+DevelopmentRoundDuration is 60 seconds for clue reading/retries; production remains 300.
 Do not implement future systems without a new task authorizing them.
 
 Eventual Milestone 1 flow:
@@ -48,9 +55,10 @@ active rounds, and a development/solo testing override. The server must decide
 whether to apply the development minimum; clients cannot authorize round changes.
 
 Do not add DataStore, MemoryStore, MessagingService, monetization, progression,
-matchmaking, puzzles, sabotage abilities, voting, or final hotel art yet.
-Only the minimal Milestone 1C greybox and world-space area labels are authorized.
-Do not build final hotel art, puzzle rooms, final UI, or a timer HUD.
+matchmaking, sabotage abilities, voting, or final hotel art yet.
+Only Room 1's Fuse Room puzzle, native prompts, greybox, and physical feedback are authorized.
+Do not add Room 2/3, final escape/Escape Alone, results scoring, rewards, spectator
+mode, final UI/HUD, or other puzzles. All later systems require a new task.
 
 ## Verification and delivery
 

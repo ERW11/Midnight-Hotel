@@ -5,6 +5,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
 local RoleService = require(script.Parent:WaitForChild("RoleService"))
 local WorldService = require(script.Parent:WaitForChild("WorldService"))
+local PuzzleService = require(script.Parent:WaitForChild("PuzzleService"))
 
 type State = "WAITING" | "COUNTDOWN" | "ROLE_REVEAL" | "PLAYING" | "RESETTING"
 
@@ -12,6 +13,7 @@ local RoundService = {}
 local state: State = "WAITING"
 local remaining = 0
 local roundDeadline = 0
+local objectiveCompleted = false
 local lobbySlots: { [Player]: number } = {}
 local hotelSlots: { [Player]: number } = {}
 local running = false
@@ -118,8 +120,13 @@ local function clearRound()
 end
 
 local function resetForTesting()
+	if not running or state == "RESETTING" then
+		return
+	end
 	cancelTimer()
 	setState("RESETTING")
+	PuzzleService.Reset()
+	objectiveCompleted = false
 	-- Replacing destinations cancels stale hotel moves, including missing characters.
 	for player in present do
 		placeInLobby(player)
@@ -144,7 +151,7 @@ local function playingTick()
 	local seconds = roundTimeRemaining()
 	log(string.format("Round timer: %d seconds remaining.", seconds))
 	if seconds == 0 then
-		log("PLAYING timer complete. Temporary round end; no win condition or RESULTS.")
+		log("PLAYING timer complete. Resetting unfinished round; no RESULTS.")
 		resetForTesting()
 		return
 	end
@@ -152,11 +159,26 @@ local function playingTick()
 end
 
 local function beginPlaying()
+	objectiveCompleted = false
 	roundDeadline = os.clock() + roundDuration
 	setState("PLAYING")
 	for player in active do
 		WorldService.SetDestination(player, "Hotel", hotelSlots[player])
 	end
+	PuzzleService.Start(function(player: Player): boolean
+		return running and state == "PLAYING" and not objectiveCompleted
+			and active[player] == true and os.clock() < roundDeadline
+	end, function()
+		if not running or state ~= "PLAYING" or objectiveCompleted then
+			return
+		end
+		objectiveCompleted = true
+		log("Fuse Room objective complete. Scheduling temporary round end.")
+		-- Replace the timer task, preserving the earlier of timeout and completion delay.
+		schedule(math.min(Config.FuseRoom.CompletionDelay, math.max(0, roundDeadline - os.clock())), function()
+			resetForTesting()
+		end)
+	end)
 	log(string.format("PLAYING started: %d seconds. Active players moving to hotel.", roundDuration))
 	schedule(math.min(Config.Timing.RoundDiagnosticInterval, roundDuration), playingTick)
 end
@@ -361,6 +383,8 @@ function RoundService.Stop()
 	end
 	running = false
 	cancelTimer()
+	PuzzleService.Reset()
+	objectiveCompleted = false
 	WorldService.Stop()
 	for _, connection in connections do
 		connection:Disconnect()
