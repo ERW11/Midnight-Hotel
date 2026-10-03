@@ -4,12 +4,16 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
 local RoleService = require(script.Parent:WaitForChild("RoleService"))
+local WorldService = require(script.Parent:WaitForChild("WorldService"))
 
-type State = "WAITING" | "COUNTDOWN" | "ROLE_REVEAL"
+type State = "WAITING" | "COUNTDOWN" | "ROLE_REVEAL" | "PLAYING" | "RESETTING"
 
 local RoundService = {}
 local state: State = "WAITING"
 local remaining = 0
+local roundDeadline = 0
+local lobbySlots: { [Player]: number } = {}
+local hotelSlots: { [Player]: number } = {}
 local running = false
 local retryPending = false
 local timer: thread? = nil
@@ -24,6 +28,25 @@ local roleRemote: RemoteEvent? = nil
 local required = if Config.DevelopmentMode
 	then Config.Players.DevelopmentMinimumPlayers
 	else Config.Players.MinimumPlayers
+local roundDuration = if Config.DevelopmentMode
+	then Config.Timing.DevelopmentRoundDuration
+	else Config.Timing.RoundDuration
+
+local function placeInLobby(player: Player)
+	local slot = lobbySlots[player]
+	if not slot then
+		local used: { [number]: boolean } = {}
+		for _, occupied in lobbySlots do
+			used[occupied] = true
+		end
+		slot = 1
+		while used[slot] do
+			slot += 1
+		end
+		lobbySlots[player] = slot
+	end
+	WorldService.SetDestination(player, "Lobby", (slot - 1) % Config.Players.MaximumPlayers + 1)
+end
 
 local function log(message: string)
 	print("[Midnight Hotel][RoundService] " .. message)
@@ -76,7 +99,7 @@ end
 
 local function deliverRole(player: Player)
 	local remote = roleRemote
-	if not remote or state ~= "ROLE_REVEAL" or not active[player]
+	if not remote or (state ~= "ROLE_REVEAL" and state ~= "PLAYING") or not active[player]
 		or not ready[player] or delivered[player] then
 		return
 	end
@@ -89,18 +112,53 @@ end
 
 local function clearRound()
 	table.clear(active)
+	table.clear(hotelSlots)
 	table.clear(delivered)
 	RoleService.ClearRoles()
 end
 
 local function resetForTesting()
+	cancelTimer()
+	setState("RESETTING")
+	-- Replacing destinations cancels stale hotel moves, including missing characters.
+	for player in present do
+		placeInLobby(player)
+	end
 	clearRound()
+	remaining = 0
+	roundDeadline = 0
 	retryPending = true
-	setState("WAITING")
+	log("Reset cleanup complete; players returning to lobby.")
 	schedule(Config.Timing.DevelopmentResetDelay, function()
 		retryPending = false
+		setState("WAITING")
 		evaluate()
 	end)
+end
+
+local function roundTimeRemaining(): number
+	return if state == "PLAYING" then math.max(0, math.ceil(roundDeadline - os.clock())) else 0
+end
+
+local function playingTick()
+	local seconds = roundTimeRemaining()
+	log(string.format("Round timer: %d seconds remaining.", seconds))
+	if seconds == 0 then
+		log("PLAYING timer complete. Temporary round end; no win condition or RESULTS.")
+		resetForTesting()
+		return
+	end
+	schedule(math.min(Config.Timing.RoundDiagnosticInterval, math.max(0, roundDeadline - os.clock())), playingTick)
+end
+
+local function beginPlaying()
+	roundDeadline = os.clock() + roundDuration
+	setState("PLAYING")
+	for player in active do
+		WorldService.SetDestination(player, "Hotel", hotelSlots[player])
+	end
+	log(string.format("PLAYING started: %d seconds. Active players moving to hotel.", roundDuration))
+	schedule(math.min(Config.Timing.RoundDiagnosticInterval, roundDuration), playingTick)
 end
 
 local function beginRoleReveal()
@@ -124,8 +182,9 @@ local function beginRoleReveal()
 		resetForTesting()
 		return
 	end
-	for _, player in roster do
+	for slot, player in roster do
 		active[player] = true
+		hotelSlots[player] = slot
 	end
 	RoleService.AssignRoles(roster)
 	log(string.format("Active roster locked: %d players.", #roster))
@@ -134,8 +193,8 @@ local function beginRoleReveal()
 		deliverRole(player)
 	end
 	schedule(Config.Timing.RoleRevealDuration, function()
-		log("ROLE_REVEAL complete. Development boundary; clearing temporary round.")
-		resetForTesting()
+		log("ROLE_REVEAL complete.")
+		beginPlaying()
 	end)
 end
 
@@ -187,6 +246,10 @@ function RoundService.GetRequiredPlayerCount(): number
 	return required
 end
 
+function RoundService.GetRoundTimeRemaining(): number
+	return roundTimeRemaining()
+end
+
 function RoundService.IsActivePlayer(player: Player): boolean
 	return active[player] == true
 end
@@ -213,6 +276,13 @@ function RoundService.Start()
 		"MaximumPlayers must be an integer at least equal to the required count")
 	assert(Config.Timing.RoleRevealDuration > 0 and Config.Timing.RoleRevealDuration < math.huge,
 		"RoleRevealDuration must be finite and positive")
+	assert(roundDuration > 0 and roundDuration < math.huge and roundDuration % 1 == 0,
+		"Round duration must be a finite positive integer")
+	for _, value in { Config.Timing.RoundDiagnosticInterval, Config.Timing.CharacterPositionTimeout,
+		Config.Timing.CharacterPositionPollInterval } do
+		assert(value > 0 and value < math.huge, "Diagnostic and positioning timings must be finite and positive")
+	end
+	WorldService.EnsureWorld()
 
 	local remote = ensureRemote()
 	roleRemote = remote
@@ -227,7 +297,8 @@ function RoundService.Start()
 		end
 		present[player] = true
 		playerCount += 1
-		if state == "ROLE_REVEAL" then
+		placeInLobby(player)
+		if state == "ROLE_REVEAL" or state == "PLAYING" or state == "RESETTING" then
 			log("Late joiner remains outside the active roster.")
 		end
 		log(string.format("Players=%d/%d. State=%s.", playerCount, required, state))
@@ -244,12 +315,15 @@ function RoundService.Start()
 		if active[player] then
 			-- Server Output only; never include an identity in role diagnostics.
 			if RoleService.IsSaboteur(player) then
-				log("Saboteur departed during ROLE_REVEAL; temporary cycle will reset normally.")
+				log(string.format("Saboteur departed during %s; cycle continues without replacement.", state))
 			else
-				log("Active player departed during ROLE_REVEAL.")
+				log(string.format("Active player departed during %s.", state))
 			end
 		end
 		active[player] = nil
+		hotelSlots[player] = nil
+		lobbySlots[player] = nil
+		WorldService.RemovePlayer(player)
 		ready[player] = nil
 		delivered[player] = nil
 		RoleService.ClearRole(player)
@@ -274,6 +348,7 @@ function RoundService.Start()
 	end
 	setState("WAITING")
 	for player in present do
+		placeInLobby(player)
 		-- Re-handshake existing clients after Stop/Start as well as initial startup.
 		remote:FireClient(player, "Ready")
 	end
@@ -286,16 +361,19 @@ function RoundService.Stop()
 	end
 	running = false
 	cancelTimer()
+	WorldService.Stop()
 	for _, connection in connections do
 		connection:Disconnect()
 	end
 	table.clear(connections)
 	table.clear(present)
 	table.clear(ready)
+	table.clear(lobbySlots)
 	clearRound()
 	roleRemote = nil
 	playerCount = 0
 	remaining = 0
+	roundDeadline = 0
 	retryPending = false
 	setState("WAITING")
 	log("Stopped.")

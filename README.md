@@ -1,161 +1,227 @@
 # TRUST NO ONE: Midnight Hotel
 
-Roblox Studio + Luau + Rojo, with server-authoritative round orchestration.
+Roblox Studio + Luau + Rojo. Server-authoritative round orchestration.
 
-## Current status
+## Current status: Milestone 1C
 
-**Milestone 1B implements WAITING → COUNTDOWN → ROLE_REVEAL only.**
-The tested minimum-player selection and countdown cancellation remain in place.
-At countdown completion, the server locks up to `Players.MaximumPlayers` players,
-assigns exactly one Saboteur and all others Guest, and privately delivers each role.
-ROLE_REVEAL lasts `Timing.RoleRevealDuration` (5 seconds). The server then clears
-roles and roster, returns to WAITING, and waits `Timing.DevelopmentResetDelay`
-(2 seconds) before reevaluating the lobby. This temporary loop runs in both modes.
-There is no PLAYING or RESETTING state and no real gameplay yet.
+Implemented flow:
 
-## Files and ownership
+`WAITING → COUNTDOWN → ROLE_REVEAL → PLAYING → RESETTING → WAITING`
 
-- `src/server/init.server.luau`: starts RoundService and stops it on server shutdown.
-- `src/server/RoundService.luau`: owns state, lobby membership, capped active roster,
-  timer, connection cleanup, and private delivery. Located under `ServerScriptService.Server`.
-- `src/server/RoleService.luau`: owns a private in-memory role table. A uniform
-  `Random:NextInteger(1, #roster)` selects one roster index as Saboteur; all other
-  indices are Guest. Rejects empty/duplicate rosters. No mutable table is exposed.
-- `src/client/init.client.luau`: connects to the private event, announces readiness,
-  validates Guest/Saboteur, and prints only its own role in Studio. No role is cached.
-- `src/shared/Config.luau`: public tuning only, mapped to `ReplicatedStorage.Shared.Config`.
+No RESULTS state or win condition exists. PLAYING ends only when its server timer
+expires. Milestone 1A player thresholds/cancellation and 1B private roles remain.
+At countdown completion the server snapshots connected players, sorts by UserId,
+and caps the roster at MaximumPlayers (6). Exactly one random roster index is
+Saboteur; everyone else is Guest. PLAYING keeps that roster and those assignments.
+Departure removes a player and their role without replacement or backfill.
+
+## Ownership and source layout
+
+- `src/server/init.server.luau`: starts RoundService and stops it on shutdown.
+- `src/server/RoundService.luau`: owns all round states, roster, spawn-slot assignment,
+  private delivery, countdown, deadline, and reset. Client input cannot change them.
+- `src/server/RoleService.luau`: private server-memory role assignments and scalar
+  queries. No mutable role table is exposed or replicated.
+- `src/server/WorldService.luau`: generates greybox geometry and owns character
+  connections, server positioning, cancellable bounded waits, and respawn routing.
+- `src/client/init.client.luau`: receives only its own role and logs it in Studio.
+  No area, state, completion, or timer controls; no HUD or final UI.
+- `src/shared/Config.luau`: public player/timing/greybox tuning, no role assignments.
 - `AGENTS.md`: project rules and current scope.
 
-RoundService snapshots connected lobby members without yielding. Overflow selection
-uses ascending UserId, capped at `Players.MaximumPlayers=6`; this is a simple stable
-selection policy, not matchmaking or a fair queue. The active set can shrink on
- departure but is never backfilled. Late joiners and overflow players receive no role
-for that cycle and may qualify for the next cycle. All connected players count toward
-the lobby threshold; MaximumPlayers caps only the active roster, not place capacity.
+Services are children of `ServerScriptService.Server`. Config is under
+`ReplicatedStorage.Shared`. Existing Rojo mappings and starter baseplate are unchanged.
 
-DevelopmentMode true uses `Players.DevelopmentMinimumPlayers=1`; false uses
-`Players.MinimumPlayers=4`. Countdown is `Timing.LobbyCountdown=15` seconds.
-Configuration is loaded at startup; stop testing, edit, sync, and start a new session.
-Countdowns use one-second task delays and can drift under server load.
+## Configuration
 
-RoundService's server-only dot-call API is `Start()`, `Stop()`, `GetState()`,
-`GetCountdownRemaining()`, `GetRequiredPlayerCount()`, `IsActivePlayer(player)`,
-and `GetActivePlayerCount()`. Getters expose scalars only. Start/Stop are idempotent.
-Stop cancels the single timer, invalidates stale callbacks, disconnects all owned
-connections, and clears membership, readiness, roster, and roles. Start re-handshakes
-existing clients. The empty remote infrastructure persists and is reused safely.
+All durations are seconds. Stop testing before editing configuration, sync, and
+start a new Play session; live configuration changes are not supported.
 
-RoleService exposes `AssignRoles(roster)`, `GetRole(player)`, `IsSaboteur(player)`,
-`IsGuest(player)`, `HasRole(player)`, `ClearRole(player)`, and `ClearRoles()`.
-RoundService orchestrates assignment and cleanup. Departures clear role data
-immediately. A departing Saboteur is not replaced; reveal finishes and resets normally.
-Exactly one Saboteur is guaranteed at assignment, not after that player departs.
+| Setting | Value | Use |
+| --- | --- | --- |
+| Players.MinimumPlayers | 4 | Required when DevelopmentMode=false |
+| Players.MaximumPlayers | 6 | Active roster cap, not Roblox place capacity |
+| Players.DevelopmentMinimumPlayers | 1 | Required when DevelopmentMode=true |
+| Timing.LobbyCountdown | 15 | Lobby countdown |
+| Timing.RoleRevealDuration | 5 | Private reveal while still in lobby |
+| Timing.RoundDuration | 300 | Production PLAYING duration, preserved |
+| Timing.DevelopmentRoundDuration | 20 | PLAYING duration when DevelopmentMode=true |
+| Timing.DevelopmentResetDelay | 2 | Pause in RESETTING in either mode |
+| Timing.ResultsDuration | 10 | Reserved; RESULTS is not implemented |
+| Timing.RoundDiagnosticInterval | 5 | Server timer log interval |
+| Timing.CharacterPositionTimeout | 10 | Maximum wait per positioning request |
+| Timing.CharacterPositionPollInterval | 0.1 | Character readiness polling interval |
+| DevelopmentMode | true | Selects development minimum and round duration |
 
-## Private networking
+`Config.World` centralizes geometry names, centers, dimensions, spawn spacing,
+marker sizes, and labels. Defaults provide six distinct spawn slots in each area.
 
-The server creates/verifies `ReplicatedStorage.MidnightHotelRemotes.PrivateRole`
-(a RemoteEvent), failing clearly on class conflicts. It contains no role data.
-Server-to-client `("Role", ownRole)` uses `FireClient` for that player only.
-`("Ready")` is a startup handshake in either direction. Clients connect first and
-announce readiness. The server sends only a currently active player's own role,
-once per assignment; repeated readiness messages do not cause duplicate delivery.
-Clients becoming ready after reveal ends receive no stale role.
+## Greybox and positioning
 
-The sender is supplied by Roblox, never a client-selected target. A client cannot
-choose a role, enter the roster, alter state, or request another player's role.
-There are no replicated role Attributes, Values, assignment folders, shared role
-tables, or role broadcasts. Guest clients receive no other player's assignment.
-Role knowledge can still be inferred in tiny rosters (a two-player Guest knows the
-other player is Saboteur); secrecy cannot prevent such logical inference.
-Server departure diagnostics omit player identity. Studio's combined Output may
-aggregate multiple clients' private logs: inspect individual client contexts when
-checking privacy. Role diagnostics are Studio-only, even when DevelopmentMode=false.
+WorldService creates exactly one session-owned `Workspace.MidnightHotelGreybox`:
 
-## Rojo development
+```text
+MidnightHotelGreybox/
+├── Lobby/                  # Floor, four walls, Spawn01..Spawn06, area label
+├── Hotel/                  # Floor, four walls, Spawn01..Spawn06, area label
+└── LobbySpawn              # Neutral SpawnLocation
+```
 
-From the repository root, run:
+Lobby center is (0,20,0); hotel center is (0,20,600). Both floors are 80x2x60,
+with simple 20-stud walls. Blue lobby markers and gold hotel markers identify
+positions. Labels say MIDNIGHT HOTEL - LOBBY and HOTEL TEST AREA. These are greybox
+shells, not puzzle rooms. Ordinary walking players are separated by walls and distance.
+The original baseplate remains below the lobby and does not connect to the hotel.
+
+Generation runs on the server at startup, uses no Toolbox assets, and reuses its
+owned folder across Start/Stop. An unrelated existing object with the reserved
+folder name causes a clear error rather than deletion. Geometry persists through
+round resets; it is session infrastructure. Do not manually create this folder.
+
+Each active roster member has a stable hotel slot chosen at roster lock, unrelated
+to role. At PLAYING, only these players receive hotel destinations. Everyone else
+keeps a lobby destination. Late joins in ROLE_REVEAL, PLAYING, or RESETTING cannot
+enter the current roster or receive a role. Overflow players may join later rounds;
+UserId ordering is deterministic, not a fair queue. More than six lobby occupants
+reuse lobby slots; the intended active capacity remains six.
+
+WorldService uses server-side Character:PivotTo and clears root velocity. If the
+character/root/humanoid is unavailable or dead, it waits at most ten seconds without
+blocking RoundService. New destinations cancel older requests. CharacterAdded
+retries the player's current destination: hotel only for active PLAYING players,
+lobby otherwise. A timeout warns and leaves the next respawn to retry. The timer
+does not pause for missing characters. No client chooses a destination.
+
+## Timer, reset, and lifecycle
+
+PLAYING uses an os.clock deadline chosen by the server. GetRoundTimeRemaining()
+returns the nonnegative rounded-up difference, zero outside PLAYING. Diagnostic
+callbacks run about every five seconds; scheduler lag cannot accumulate extra
+five-second chunks in the deadline. A stalled server can still process expiry late.
+The existing COUNTDOWN uses one-second delayed ticks.
+
+At expiry, RESETTING cancels the prior timer, replaces every connected player's
+positioning request with a lobby destination, clears roles/active roster/hotel slots/
+delivery tracking, and zeros countdown and round timer state. After two seconds it
+enters WAITING and reevaluates population. A missing character may finish its bounded
+lobby move after that pause; stale hotel requests cannot run. Readiness and lobby
+membership persist across rounds. Roles are assigned anew only in the next cycle.
+
+Start()/Stop() are idempotent. Stop cancels the round timer and all pending character
+moves, disconnects player/remote/character events, clears all player and round data,
+and immediately moves available living characters to the lobby. It does not wait
+for missing characters. Start rebuilds membership and re-handshakes existing clients.
+Geometry and the empty remote infrastructure are reused, not duplicated.
+
+RoundService exposes scalar getters: GetState(), GetCountdownRemaining(),
+GetRequiredPlayerCount(), GetRoundTimeRemaining(), IsActivePlayer(player), and
+GetActivePlayerCount(). RoleService exposes GetRole/IsSaboteur/IsGuest/HasRole and
+assignment/cleanup methods for server use only.
+
+## Privacy
+
+`ReplicatedStorage.MidnightHotelRemotes.PrivateRole` is server-created/verified.
+It contains no role state. FireClient sends only the recipient's own role. Ready
+messages only indicate that the client listener is connected; they grant no role,
+roster membership, or control. Delayed active clients may receive their own role
+during PLAYING, once per assignment. Late joiners and reset cycles receive no stale role.
+No role Attributes, Values, folders, public tables, or role broadcasts exist.
+Spawn placement is independent of role. Client role logs are Studio-only; combined
+Studio Output may aggregate different clients' logs. Inspect each client separately.
+Tiny rosters can permit logical inference of roles despite private delivery.
+
+## Rojo and manual setup
+
+From the repository root:
 
 ```sh
 rojo serve default.project.json
 ```
 
 Connect the Studio Rojo plugin to the local server (default port 34872), review and
-apply sync changes. Verify `ServerScriptService.Server` contains RoundService and
-RoleService. Both are server-only. During Play, the server creates the remote folder.
-Alternatively build and open:
+apply changes. Alternatively build and open the Git-ignored generated place:
 
 ```sh
 rojo build default.project.json -o Midnight-Hotel.rbxlx
 ```
 
-The generated place is Git-ignored. Rojo mappings and starter baseplate/lighting
-are unchanged. No external packages, new geometry, or UI have been added.
+No manual geometry, SpawnLocations, remotes, or scripts are required. The greybox
+appears during Play, not in edit mode. Use a clean development place or the generated
+place to avoid unrelated scripts/spawns affecting tests. Open Output and select the
+server or individual client context. No dependencies were added.
 
-## Studio test checklist
+## Exact Studio tests
 
-Open Output, selecting the server or individual client context as appropriate.
-Always stop the session before changing Config. Restore defaults after tests.
+### Solo acceptance test
 
-1. **Solo:** with DevelopmentMode=true, start Play. Expect WAITING, COUNTDOWN,
-   a start at 15 seconds, and ticks 14 through 0. Expect a roster of 1 and ROLE_REVEAL.
-   The only client must log Saboteur. After 5 seconds expect the development-boundary
-   diagnostic and WAITING; after 2 seconds another countdown begins. Test two cycles.
-2. **Four players:** set DevelopmentMode=false, sync, and start a local server with
-   four clients. Expect roster size 4. Inspect each client's Output: exactly one
-   Saboteur message and three Guest messages per cycle, each on its own client.
-   No full roster or another player's role should be received. All clients still
-   print their private Studio diagnostics with DevelopmentMode=false.
-3. **1A cancellation regression:** start with three clients in normal mode: WAITING.
-   Add a fourth: COUNTDOWN. Close one before zero: immediate cancellation and WAITING,
-   no stale ticks. Add a replacement: a fresh countdown at 15. With five clients,
-   dropping to four should not cancel or restart it.
-4. **Late join:** temporarily set RoleRevealDuration=30 to give time. Start four
-   clients in normal mode; wait for ROLE_REVEAL, then add a fifth. Expect the late-join
-   diagnostic. The fifth receives no role for this cycle, active count stays 4,
-   and it can join the next cycle after reset. Use the server query below to verify.
-5. **Departure:** during the extended reveal, close a Guest client. Active count
-   shrinks and the departing player's role is cleared. Repeat in another cycle,
-   closing the client whose own Output says Saboteur. Expect the server's Saboteur
-   departure diagnostic, no reassignment, no crash, and normal completion/reset.
-   Dropping below minimum during reveal does not cancel reveal; the next WAITING
-   phase remains there if there are too few players.
-6. **Capacity:** if practical, start seven clients with MaximumPlayers=6. Active
-   count must be 6, with one Saboteur and five Guests. The excluded client receives
-   no role this cycle. Do not expect fair rotation; overflow policy is UserId order.
-7. **Cleanup:** during reveal, use the server Command Bar lifecycle check below.
-   Stop twice, verify WAITING/0 active and no roles, wait longer than the old reveal
-   duration, and confirm no stale completion. Start twice: one countdown stream and
-   private delivery still work. Repeat during countdown and the retry pause.
-8. Restore DevelopmentMode=true and RoleRevealDuration=5. Confirm no errors or
-   infinite-yield warnings. End and restart Play to verify fresh startup.
+1. Keep DevelopmentMode=true and default timings. Sync and start Play.
+2. Verify your character appears inside MIDNIGHT HOTEL - LOBBY and the greybox
+   folder contains one Lobby, one Hotel, and one LobbySpawn.
+3. Observe WAITING → COUNTDOWN (15 seconds) → ROLE_REVEAL (5 seconds). The solo
+   client's own Output must say Saboteur; remain in the lobby during reveal.
+4. At PLAYING, verify visible movement to HOTEL TEST AREA. The server logs a
+   20-second timer. Move around, then use Roblox's Reset Character action.
+   After respawn, return to the hotel if PLAYING is still active, lobby otherwise.
+5. At expiry, verify RESETTING moves you back to the lobby. After 2 seconds,
+   WAITING transitions to a fresh countdown. Observe a second complete cycle
+   without restarting Studio, duplicate ticks, duplicated geometry, or stale moves.
+6. Repeat a character reset near timer expiry. The new character must end up in
+   the lobby after RESETTING, not at a stale hotel destination.
 
-Read-only **server** Command Bar inspection (does not print secret assignments):
+### Four-player production-duration test
+
+1. Stop Play, set only DevelopmentMode=false, sync, and start a local Studio
+   server with four clients. Leave RoundDuration=300 and other defaults unchanged.
+2. Each character starts in the lobby. After 15+5 seconds, all four locked players
+   move to separate hotel markers. Check individual client Output: exactly one
+   Saboteur and three Guests, with no role reroll at PLAYING.
+3. Verify the server logs PLAYING started: 300 seconds. Wait the full five-minute
+   PLAYING duration. All connected players return to the lobby, reset takes two
+   seconds, and another countdown begins if four players remain.
+4. In a separate run, begin with three clients: remain WAITING. Add a fourth to
+   start COUNTDOWN; disconnect one before zero. Expect immediate cancellation.
+   Add a replacement and confirm a fresh 15-second countdown. With five clients,
+   dropping to four must not cancel/restart COUNTDOWN.
+
+### Late join, departure, and cleanup tests
+
+1. Add a fifth client during PLAYING. It must remain in the lobby, receive no role,
+   and stay outside the roster. Reset that client's character: it stays in the lobby.
+   It may qualify for the next round. For ROLE_REVEAL joins, temporarily increase
+   RoleRevealDuration to 30, then restore 5. For RESETTING joins, temporarily increase
+   DevelopmentResetDelay to 10, then restore 2.
+2. Disconnect an active Guest during PLAYING, then repeat with the Saboteur in
+   another cycle. The timer continues, roles clear for departures, and there is no
+   replacement or fallback. Disconnect during RESETTING too: no crash or stalled reset.
+3. If all active players leave, the timer still expires normally. A late joiner
+   remains in the lobby until a future roster is selected.
+4. In server Command Bar, inspect state and membership without logging secret roles:
 
 ```lua
-local server = game.ServerScriptService.Server
-local rounds = require(server.RoundService)
-local roles = require(server.RoleService)
-print(rounds.GetState(), rounds.GetActivePlayerCount())
-for _, player in game.Players:GetPlayers() do
-    print(player.Name, rounds.IsActivePlayer(player), roles.HasRole(player))
+local s = game.ServerScriptService.Server
+local rounds, roles = require(s.RoundService), require(s.RoleService)
+print(rounds.GetState(), rounds.GetActivePlayerCount(), rounds.GetRoundTimeRemaining())
+for _, p in game.Players:GetPlayers() do
+    print(p.Name, rounds.IsActivePlayer(p), roles.HasRole(p))
 end
 ```
 
-Lifecycle check, also in the **server** Command Bar:
+5. During PLAYING (and separately COUNTDOWN/RESETTING), run this server cleanup check:
 
 ```lua
-local server = game.ServerScriptService.Server
-local rounds = require(server.RoundService)
-local roles = require(server.RoleService)
+local s = game.ServerScriptService.Server
+local rounds, roles = require(s.RoundService), require(s.RoleService)
 rounds.Stop()
 rounds.Stop()
-assert(rounds.GetState() == "WAITING" and rounds.GetActivePlayerCount() == 0)
-for _, player in game.Players:GetPlayers() do
-    assert(not roles.HasRole(player))
+assert(rounds.GetState() == "WAITING")
+assert(rounds.GetActivePlayerCount() == 0 and rounds.GetRoundTimeRemaining() == 0)
+assert(rounds.GetCountdownRemaining() == 0)
+for _, p in game.Players:GetPlayers() do
+    assert(not roles.HasRole(p))
 end
 ```
 
-After waiting to check that the old timer stays cancelled, restart:
+Wait past the old timer deadline: no stale completion should occur. Then restart:
 
 ```lua
 local rounds = require(game.ServerScriptService.Server.RoundService)
@@ -163,34 +229,42 @@ rounds.Start()
 rounds.Start()
 ```
 
-Expected server messages include (each prefixed `[Midnight Hotel][RoundService]`):
+One countdown should start, geometry should not duplicate, and role delivery and
+respawn routing must still work. Restore DevelopmentMode=true and all default
+settings after testing. Check Output for errors and infinite-yield warnings.
+
+## Expected Output
+
+Existing bootstrap/countdown/private-role messages remain. New server messages:
 
 ```text
-State=WAITING. Players=0/1.
-State=COUNTDOWN. Players=1/1.
-Countdown started: 15 seconds.
-Countdown: 14.
-...
-Countdown: 0.
-Countdown complete.
-Active roster locked: 1 players.
-State=ROLE_REVEAL. Players=1/1.
-ROLE_REVEAL complete. Development boundary; clearing temporary round.
-State=WAITING. Players=1/1.
+[Midnight Hotel][WorldService] Greybox ready: Lobby and Hotel.
+[Midnight Hotel][RoundService] ROLE_REVEAL complete.
+[Midnight Hotel][RoundService] State=PLAYING. Players=1/1.
+[Midnight Hotel][RoundService] PLAYING started: 20 seconds. Active players moving to hotel.
+[Midnight Hotel][RoundService] Round timer: 15 seconds remaining.
+[Midnight Hotel][RoundService] Round timer: 10 seconds remaining.
+[Midnight Hotel][RoundService] Round timer: 5 seconds remaining.
+[Midnight Hotel][RoundService] Round timer: 0 seconds remaining.
+[Midnight Hotel][RoundService] PLAYING timer complete. Temporary round end; no win condition or RESULTS.
+[Midnight Hotel][RoundService] State=RESETTING. Players=1/1.
+[Midnight Hotel][RoundService] Reset cleanup complete; players returning to lobby.
+[Midnight Hotel][RoundService] State=WAITING. Players=1/1.
 ```
 
-Additional messages: `Late joiner remains outside the active roster.`,
-`Active player departed during ROLE_REVEAL.`, or
-`Saboteur departed during ROLE_REVEAL; temporary cycle will reset normally.`
-Initial player counts/order depend on when players connect. Each Studio client
-logs only `[Midnight Hotel][Client] Private role received: Guest` or `Saboteur`.
-Historical Output logs remain after reset, but no client role state is retained.
+Counts/timing may vary with connection order and scheduler load. Departure and
+late-join diagnostics identify behavior, never publicly broadcast a secret identity.
 
-## Remaining work and validation limits
+## Limits and unimplemented systems
 
-No PLAYING, teleportation, hotel building, puzzles, sabotage, voting, escape,
-results, rewards, progression, final UI, or full gameplay reset. There is no
-cooperative fallback or backfill on departure. RoundDuration and ResultsDuration
-remain unused. The temporary reveal boundary is not a real round ending.
-Rojo builds validate packaging, not runtime behavior. Studio checks above are
-required; do not treat build success as executed multiplayer tests.
+No puzzles, sabotage abilities, voting, final escape logic, RESULTS/scoring,
+rewards, progression, cosmetics, polished art, final UI/HUD, persistence,
+matchmaking, or monetization. No spectator mode, fair overflow queue, Saboteur
+replacement, or cooperative fallback. ResultsDuration remains unused.
+This is a playable movement/timer skeleton, not completed game objectives.
+Character movement is ordinary Roblox movement; server-controlled placement is
+not an anti-cheat system for continuous movement. Custom rigs without a live
+Humanoid/HumanoidRootPart can time out. Geometry does not auto-repair manual edits
+while running. More than six lobby players may share markers.
+Rojo build checks packaging only. Runtime, physics, visual layout, and multiplayer
+acceptance require the Studio tests above; build success is not a Studio test result.

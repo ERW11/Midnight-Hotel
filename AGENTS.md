@@ -23,12 +23,18 @@
 
 ## Scope
 
-Milestone 1B adds ROLE_REVEAL to the tested WAITING/COUNTDOWN flow. RoundService
+Milestone 1C adds PLAYING and RESETTING to the tested WAITING/COUNTDOWN/ROLE_REVEAL flow. RoundService
 owns a capped roster snapshot; late joiners cannot enter the current roster.
 RoleService stores authoritative secret assignments only in server memory.
 PrivateRole sends only the recipient's own role; client readiness is never eligibility.
 Never replicate a role table, role Attributes, or the Saboteur identity publicly.
-ROLE_REVEAL ends at a temporary testing reset. PLAYING and later gameplay are NOT implemented.
+PLAYING preserves roles and roster and uses a server-owned deadline. Its timer
+ends at a temporary RESETTING boundary, not RESULTS or a win condition.
+WorldService owns Workspace.MidnightHotelGreybox, deterministic lobby/hotel geometry,
+server positioning, bounded character waits, and respawn routing. Never put roles
+in world objects. Replace pending moves when destinations change; clean them on Stop.
+Late joiners stay in the lobby; active players respawn in the hotel only during PLAYING.
+DevelopmentRoundDuration is 20 seconds; production RoundDuration remains 300.
 Do not implement future systems without a new task authorizing them.
 
 Eventual Milestone 1 flow:
@@ -43,7 +49,8 @@ whether to apply the development minimum; clients cannot authorize round changes
 
 Do not add DataStore, MemoryStore, MessagingService, monetization, progression,
 matchmaking, puzzles, sabotage abilities, voting, or final hotel art yet.
-Do not create map geometry or UI during this foundation task.
+Only the minimal Milestone 1C greybox and world-space area labels are authorized.
+Do not build final hotel art, puzzle rooms, final UI, or a timer HUD.
 
 ## Verification and delivery
 
