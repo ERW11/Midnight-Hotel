@@ -10,6 +10,8 @@ local Config = {
 	}),
 	Timing = table.freeze({
 		LobbyCountdown = 15,
+		-- Temporary Milestone 1A testing pause; not a real round reset.
+		DevelopmentResetDelay = 2,
 		RoleRevealDuration = 5,
 		RoundDuration = 300,
 		ResultsDuration = 10,

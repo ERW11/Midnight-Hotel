@@ -23,8 +23,9 @@
 
 ## Scope
 
-The current foundation contains only configuration, minimal server/client
-module-loading bootstraps, and documentation. Gameplay is NOT implemented.
+Milestone 1A implements server-only WAITING/COUNTDOWN through RoundService,
+including player observation, cancellation, and a temporary delayed testing retry.
+Only those two states exist. Later round gameplay is NOT implemented.
 Do not implement future systems without a new task authorizing them.
 
 Eventual Milestone 1 flow:
